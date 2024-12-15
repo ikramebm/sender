@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Émetteur Vidéo WebRTC</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            text-align: center;
+        }
+        #localVideo {
+            max-width: 100%;
+            background-color: #f0f0f0;
+            border: 1px solid #ccc;
+        }
+    </style>
+</head>
+<body>
+    <h1>Émetteur de Flux Vidéo</h1>
+    <div>
+        <video id="localVideo" width="640" height="480" autoplay muted></video>
+    </div>
+
+    <script>
+        const socket = new WebSocket('wss://ikrame-s-websocket-server.glitch.me');
+        const localVideo = document.getElementById('localVideo');
+        let peerConnection = null;
+        let localStream = null;
+
+        const ice_servers = {
+            urls: ['turn:ikrame-s-websocket-server.glitch.me:3478'],
+            username: "admin",
+            credential: "admin"
+        };
+
+        socket.onopen = () => {
+            socket.send(JSON.stringify({type: 'register-esp32'}));
+        };
+
+        async function startStream() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: 640, height: 480 }, 
+                    audio: false 
+                });
+                
+                localVideo.srcObject = localStream;
+
+                // Connexion WebRTC
+                peerConnection = new RTCPeerConnection({ 
+                    iceServers: [ice_servers]
+                });
+
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                // Préparation de l'offre
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                socket.send(JSON.stringify({
+                    type: 'webrtc-offer',
+                    offer: offer
+                }));
+
+                // Gestion des ICE candidates
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        socket.send(JSON.stringify({
+                            type: 'webrtc-ice-candidate',
+                            candidate: event.candidate
+                        }));
+                    }
+                };
+
+            } catch (error) {
+                console.error('Erreur lors du démarrage de la caméra:', error);
+            }
+        }
+
+        function stopStream() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localVideo.srcObject = null;
+                
+                if (peerConnection) {
+                    peerConnection.close();
+                    peerConnection = null;
+                }
+            }
+        }
+
+        socket.addEventListener('message', async (event) => {
+            const message = JSON.parse(event.data);
+            console.log('Message reçu:', message);
+
+            if (message.type === 'start-stream') {
+                await startStream();
+            } else if (message.type === 'stop-stream') {
+                stopStream();
+            } else if (message.type === 'webrtc-answer') {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+            } else if (message.type === 'webrtc-ice-candidate') {
+                if (message.candidate && peerConnection) {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                }
+            }
+        });
+    </script>
+</body>
+</html>
